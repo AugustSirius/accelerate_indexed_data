@@ -1,0 +1,57 @@
+[package]
+name = "read_bruker_data"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "read_bruker_data"
+path = "src/main.rs"
+
+[dependencies]
+bincode = "1.3"
+timsrust = "0.4.2"
+csv = "1.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = "0.4"
+rayon = "1.8"
+polars = { version = "0.37", features = ["lazy", "parquet", "csv", "strings", "temporal", "regex"] }
+ndarray = { version = "0.15", features = ["rayon"] }
+num_cpus = "1.16"
+ahash = "0.8"
+bitvec = "1.0"
+parking_lot = "0.12"
+sysinfo = "0.29"
+rustc-hash = "1.1"
+jemalloc-ctl = "0.5"
+crossbeam = "0.8"
+
+# Development builds (for debugging)
+[profile.dev]
+opt-level = 0
+debug = true
+
+# Quick development with optimizations
+[profile.dev-opt]
+inherits = "dev"
+opt-level = 2
+
+# Fast release builds (for testing/development)
+[profile.fast-release]
+inherits = "release"
+lto = "thin"
+codegen-units = 16
+
+# Standard release builds (balanced)
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+strip = true
+
+# Maximum performance builds (for benchmarks/production)
+[profile.max-perf]
+inherits = "release"
+lto = true
+codegen-units = 1
+strip = true

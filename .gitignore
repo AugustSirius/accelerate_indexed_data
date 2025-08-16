@@ -1,0 +1,10 @@
+# timsTOF caches
+**/.timstof_cache/
+
+# Generated precursor outputs
+**/output_precursors/
+
+# Rust build artifacts
+**/target/
+
+
