@@ -4,10 +4,10 @@
 #SBATCH -q normal
 #SBATCH -J rust
 #SBATCH -c 1
-#SBATCH -n 16
-#SBATCH --mem 200G
+#SBATCH -n 64
+#SBATCH --mem 400G
 ########################## MSConvert run #####################
 # module
 module load gcc
-cd /storage/guotiannanLab/wangshuaiyao/006.DIABERT_TimsTOF_Rust/dia_peak/timstof
+cd /storage/guotiannanLab/wangshuaiyao/006.DIABERT_TimsTOF_Rust/accelerate_indexed_data/timstof-opt_build_indexed-opt_read
 cargo run --release
