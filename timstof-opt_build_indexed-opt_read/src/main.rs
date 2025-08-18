@@ -1,8 +1,6 @@
 mod utils;
-mod cache;
 mod processing;
 
-use cache::CacheManager;
 use utils::{
     read_timstof_data, build_indexed_data, read_parquet_with_polars,
     library_records_to_dataframe, merge_library_and_report, get_unique_precursor_ids, 
@@ -39,32 +37,6 @@ fn main() -> Result<(), Box<dyn Error>> {
             .build_global()
             .unwrap();
         println!("Running in sequential mode (1 thread)");
-    }
-    
-    let args: Vec<String> = env::args().collect();
-    
-    // Handle command-line arguments for cache operations
-    if let Some(arg) = args.get(1) {
-        match arg.as_str() {
-            "--clear-cache" => {
-                CacheManager::new().clear_cache()?;
-                return Ok(());
-            }
-            "--cache-info" => {
-                let cache_manager = CacheManager::new();
-                let info = cache_manager.get_cache_info()?;
-                if info.is_empty() {
-                    println!("Cache is empty");
-                } else {
-                    println!("Cache files:");
-                    for (name, _, size_str) in info {
-                        println!("  {} - {}", name, size_str);
-                    }
-                }
-                return Ok(());
-            }
-            _ => {}
-        }
     }
     
     // Automatic OS detection and file path assignment

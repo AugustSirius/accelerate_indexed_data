@@ -9,5 +9,6 @@
 ########################## MSConvert run #####################
 # module
 module load gcc
+export RUSTFLAGS="-C target-cpu=znver2"  # ADD THIS LINE!
 cd /storage/guotiannanLab/wangshuaiyao/006.DIABERT_TimsTOF_Rust/accelerate_indexed_data/timstof-opt_build_indexed-opt_read
 cargo run --release
