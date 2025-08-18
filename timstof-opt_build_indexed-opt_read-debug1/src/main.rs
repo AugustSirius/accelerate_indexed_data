@@ -26,7 +26,7 @@ use polars::prelude::*;
 
 fn main() -> Result<(), Box<dyn Error>> {
     // Configurable parallel processing parameter
-    let parallel_threads = 64; // Set to 1 for sequential, 2+ for parallel processing
+    let parallel_threads = 32; // Set to 1 for sequential, 2+ for parallel processing
     
     // Initialize global thread pool based on parallel_threads setting
     if parallel_threads > 1 {

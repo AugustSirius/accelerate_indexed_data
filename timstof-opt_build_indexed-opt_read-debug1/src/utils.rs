@@ -24,7 +24,7 @@ use std::time::Instant;
 // static GLOBAL: MiMalloc = MiMalloc;
 
 // Constants
-const NUM_THREADS: usize = 64;  // From main.rs parallel_threads setting
+const NUM_THREADS: usize = 32;  // From main.rs parallel_threads setting
 const CHANNEL_BUFFER_SIZE: usize = 2000;
 
 #[derive(Debug, Clone)]
