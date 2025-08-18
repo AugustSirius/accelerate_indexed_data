@@ -1,4 +1,5 @@
 // In main.rs (not in utils.rs)
+use mimalloc::MiMalloc;
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 

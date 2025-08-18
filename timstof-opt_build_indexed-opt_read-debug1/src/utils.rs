@@ -17,8 +17,8 @@ use crossbeam_channel::bounded;
 use parking_lot::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::time::Instant;
-use mimalloc::MiMalloc;
 
+// use mimalloc::MiMalloc;
 // // Global allocator
 // #[global_allocator]
 // static GLOBAL: MiMalloc = MiMalloc;
