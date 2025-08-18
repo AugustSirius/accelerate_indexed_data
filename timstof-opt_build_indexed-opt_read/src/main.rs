@@ -39,6 +39,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!("Running in sequential mode (1 thread)");
     }
     
+    let args: Vec<String> = env::args().collect();
+    
     // Automatic OS detection and file path assignment
     let is_macos = std::env::consts::OS == "macos";
     println!("Detected OS: {}", std::env::consts::OS);
