@@ -151,6 +151,7 @@ pub struct IndexedTimsTOFData {
 // Thread-Local Accumulator for Lock-Free Processing
 // ============================================================================
 
+#[derive(Debug)]  // Add this line
 struct ThreadLocalAccumulator {
     ms1_data: TimsTOFData,
     ms2_data: AHashMap<(u32, u32), TimsTOFData>,
@@ -461,7 +462,7 @@ pub fn read_timstof_data(d_folder: &Path) -> Result<TimsTOFRawData, Box<dyn Erro
     
     // Parallel final merge of MS2 windows
     let ms2_vec: Vec<_> = global_ms2_map
-        .into_par_iter()
+        .into_par_iter()  // This is correct, but we need to consume global_ms2_map
         .map(|((q_low, q_high), chunks)| {
             let low = q_low as f32 / 10_000.0;
             let high = q_high as f32 / 10_000.0;
@@ -470,6 +471,10 @@ pub fn read_timstof_data(d_folder: &Path) -> Result<TimsTOFRawData, Box<dyn Erro
             let total_size: usize = chunks.iter()
                 .map(|c| c.mz_values.len())
                 .sum();
+            
+            if total_size == 0 {
+                return ((low, high), TimsTOFData::new());
+            }
             
             let mut merged = TimsTOFData::preallocate_exact(total_size);
             let mut offset = 0;

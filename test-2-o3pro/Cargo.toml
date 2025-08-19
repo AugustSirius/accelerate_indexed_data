@@ -1,0 +1,33 @@
+[package]
+name = "timstof_data_loader"
+version = "0.2.0"
+edition = "2021"
+
+[dependencies]
+# Core dependencies
+timsrust = "0.4.2"              # TimsTOF data format reading
+rayon = "1.8"                    # Parallel processing
+serde = { version = "1.0", features = ["derive"] }  # Serialization
+
+# Performance-critical data structures
+ahash = "0.8"                    # Fastest non-cryptographic hash
+parking_lot = "0.12"             # Faster mutexes (still used in some places)
+
+# Memory allocator for better performance
+mimalloc = { version = "0.1", optional = true }
+
+[features]
+default = ["mimalloc"]
+mimalloc = ["dep:mimalloc"]
+
+# Maximum performance profile
+[profile.release]
+opt-level = 3
+lto = "fat"                      # Full link-time optimization
+codegen-units = 1
+strip = true
+panic = "abort"
+overflow-checks = false
+
+# For native CPU optimizations, build with:
+# RUSTFLAGS="-C target-cpu=native" cargo build --release
