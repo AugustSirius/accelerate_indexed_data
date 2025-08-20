@@ -341,7 +341,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Configure thread pool for optimal performance
     // Comment this out to use all available cores, or adjust as needed
     rayon::ThreadPoolBuilder::new()
-        .num_threads(64)  // Set to optimal thread count based on your testing
+        .num_threads(40)  // Set to optimal thread count based on your testing
         .build_global()
         .unwrap();
     
