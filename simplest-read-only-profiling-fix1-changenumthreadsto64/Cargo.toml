@@ -1,0 +1,27 @@
+[package]
+name = "timstof_reader"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "timstof_reader"
+path = "src/main.rs"
+
+[dependencies]
+# Core TimsTOF reading library
+timsrust = "0.4.2"
+
+# Parallel processing
+rayon = "1.8"
+
+# Standard release build configuration
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+strip = true
+
+# Fast development build with some optimizations
+[profile.dev]
+opt-level = 2
+debug = true
