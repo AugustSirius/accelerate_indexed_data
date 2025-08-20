@@ -374,13 +374,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     
     // Hard-coded path to TimsTOF data - CHANGE THIS TO YOUR PATH
     // let data_path = "/path/to/your/data.d";
-    let data_path = "/Users/augustsirius/Desktop/DIA_peak_group_extraction/输入数据文件/raw_data/CAD20220207yuel_TPHP_DIA_pool1_Slot2-54_1_4382.d";
-    // let data_path = "/wangshuaiyao/dia-bert-timstof/test_data/CAD20220207yuel_TPHP_DIA_pool1_Slot2-54_1_4382.d";
+    // let data_path = "/Users/augustsirius/Desktop/DIA_peak_group_extraction/输入数据文件/raw_data/CAD20220207yuel_TPHP_DIA_pool1_Slot2-54_1_4382.d";
+    let data_path = "/wangshuaiyao/dia-bert-timstof/test_data/CAD20220207yuel_TPHP_DIA_pool1_Slot2-54_1_4382.d";
     
     let d_path = Path::new(data_path);
-    if !d_path.exists() {
-        return Err(format!("Data folder {:?} not found", d_path).into());
-    }
     
     println!("\n========== Fully Optimized TimsTOF Raw Data Reader ==========");
     println!("Data folder: {}", data_path);
