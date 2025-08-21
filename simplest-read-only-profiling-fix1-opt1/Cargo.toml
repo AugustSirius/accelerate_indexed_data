@@ -10,9 +10,8 @@ path = "src/main.rs"
 [dependencies]
 # Core TimsTOF reading library
 timsrust = "0.4.2"
-
-# Parallel processing
 rayon = "1.8"
+dashmap = "5.5"
 
 # Standard release build configuration
 [profile.release]

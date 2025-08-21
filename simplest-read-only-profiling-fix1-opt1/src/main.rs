@@ -269,50 +269,83 @@ fn read_timstof_data(d_folder: &Path) -> Result<TimsTOFRawData, Box<dyn Error>> 
              ms1_merge_start.elapsed().as_secs_f32() * 1000.0, 
              global_ms1.mz_values.len());
     
-    // Step 5: Merge MS2 data - HEAVILY OPTIMIZED
+    // // Step 5: Merge MS2 data - HEAVILY OPTIMIZED
+    // let ms2_merge_start = Instant::now();
+    // println!("  Merging MS2 data...");
+    
+    // // OPTIMIZATION #2: Pre-allocate HashMap with expected size
+    // // Typically 32-50 windows in DIA
+    // let mut ms2_hash: HashMap<(u32,u32), TimsTOFData> = HashMap::with_capacity(64);
+    
+    // // OPTIMIZATION: Pre-calculate total MS2 size per window to avoid reallocation
+    // let mut window_sizes: HashMap<(u32, u32), usize> = HashMap::with_capacity(64);
+    // for split in &splits {
+    //     for (key, td) in &split.ms2 {
+    //         *window_sizes.entry(*key).or_insert(0) += td.mz_values.len();
+    //     }
+    // }
+    
+    // // Pre-allocate each window with exact capacity
+    // for (key, size) in window_sizes {
+    //     ms2_hash.insert(key, TimsTOFData::with_capacity(size));
+    // }
+    
+    // // Now merge without reallocation
+    // for mut split in splits {
+    //     for (key, mut td) in split.ms2 {
+    //         if let Some(entry) = ms2_hash.get_mut(&key) {
+    //             entry.merge_from(&mut td);
+    //         }
+    //     }
+    // }
+    
+    // println!("  ✓ MS2 merge: {:.2} ms ({} windows)", 
+    //          ms2_merge_start.elapsed().as_secs_f32() * 1000.0, 
+    //          ms2_hash.len());
+    
+    // // Step 6: Convert to final format
+    // let ms2_convert_start = Instant::now();
+    // let mut ms2_vec = Vec::with_capacity(ms2_hash.len());
+
+    // // OPTIMIZATION: Move data instead of cloning
+    // for ((q_low, q_high), td) in ms2_hash {
+    //     let low = q_low as f32 / 10_000.0;
+    //     let high = q_high as f32 / 10_000.0;
+    //     ms2_vec.push(((low, high), td));
+    // }
+
+    // Replace your MS2 merge with parallel version:
     let ms2_merge_start = Instant::now();
     println!("  Merging MS2 data...");
-    
-    // OPTIMIZATION #2: Pre-allocate HashMap with expected size
-    // Typically 32-50 windows in DIA
-    let mut ms2_hash: HashMap<(u32,u32), TimsTOFData> = HashMap::with_capacity(64);
-    
-    // OPTIMIZATION: Pre-calculate total MS2 size per window to avoid reallocation
-    let mut window_sizes: HashMap<(u32, u32), usize> = HashMap::with_capacity(64);
-    for split in &splits {
-        for (key, td) in &split.ms2 {
-            *window_sizes.entry(*key).or_insert(0) += td.mz_values.len();
-        }
-    }
-    
-    // Pre-allocate each window with exact capacity
-    for (key, size) in window_sizes {
-        ms2_hash.insert(key, TimsTOFData::with_capacity(size));
-    }
-    
-    // Now merge without reallocation
-    for mut split in splits {
+
+    use std::sync::Mutex;
+
+    // Create thread-safe hash map
+    let ms2_hash: dashmap::DashMap<(u32, u32), Mutex<TimsTOFData>> = dashmap::DashMap::with_capacity(64);
+
+    // Parallel merge
+    splits.into_par_iter().for_each(|mut split| {
         for (key, mut td) in split.ms2 {
-            if let Some(entry) = ms2_hash.get_mut(&key) {
-                entry.merge_from(&mut td);
+            match ms2_hash.entry(key) {
+                dashmap::mapref::entry::Entry::Occupied(mut entry) => {
+                    entry.get_mut().lock().unwrap().merge_from(&mut td);
+                }
+                dashmap::mapref::entry::Entry::Vacant(entry) => {
+                    entry.insert(Mutex::new(td));
+                }
             }
         }
-    }
-    
-    println!("  ✓ MS2 merge: {:.2} ms ({} windows)", 
-             ms2_merge_start.elapsed().as_secs_f32() * 1000.0, 
-             ms2_hash.len());
-    
-    // Step 6: Convert to final format
-    let ms2_convert_start = Instant::now();
-    let mut ms2_vec = Vec::with_capacity(ms2_hash.len());
-    
-    // OPTIMIZATION: Move data instead of cloning
-    for ((q_low, q_high), td) in ms2_hash {
-        let low = q_low as f32 / 10_000.0;
-        let high = q_high as f32 / 10_000.0;
-        ms2_vec.push(((low, high), td));
-    }
+    });
+
+    // Convert to final format
+    let mut ms2_vec: Vec<_> = ms2_hash.into_iter()
+        .map(|((q_low, q_high), mutex_td)| {
+            let td = mutex_td.into_inner().unwrap();
+            let low = q_low as f32 / 10_000.0;
+            let high = q_high as f32 / 10_000.0;
+            ((low, high), td)
+        })
+        .collect();
     
     // Sort by window for consistent output
     ms2_vec.sort_by(|a, b| a.0.0.partial_cmp(&b.0.0).unwrap());
@@ -338,15 +371,12 @@ fn read_timstof_data(d_folder: &Path) -> Result<TimsTOFRawData, Box<dyn Error>> 
 // ============================================================================
 
 fn main() -> Result<(), Box<dyn Error>> {
-    // OPTIMIZATION: Better thread pool configuration
+    // Configure thread pool for optimal performance
+    // Comment this out to use all available cores, or adjust as needed
     rayon::ThreadPoolBuilder::new()
-        .num_threads(64)  // Use all cores you're paying for
-        .stack_size(2 * 1024 * 1024)  // 2MB is enough, reduces memory overhead
+        .num_threads(32)  // Set to optimal thread count based on your testing
         .build_global()
         .unwrap();
-    
-    // Enable work stealing for better load balancing
-    std::env::set_var("RAYON_SPAWN_STRATEGY", "jobs");
     
     // Hard-coded path to TimsTOF data
     // let data_path = "/path/to/your/data.d";  // CHANGE THIS TO YOUR PATH
