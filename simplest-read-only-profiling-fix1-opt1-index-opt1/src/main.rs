@@ -194,13 +194,20 @@ fn build_scan_lookup(scan_offsets: &[usize]) -> Vec<u32> {
 }
 
 // ============================================================================
-// Core Data Reading Function
+// Core Data Reading Function - WITH LOCAL 32-THREAD POOL
 // ============================================================================
 
 fn read_timstof_data(d_folder: &Path) -> Result<TimsTOFRawData, Box<dyn Error>> {
     let start_time = Instant::now();
     println!("Reading TimsTOF data from: {:?}", d_folder);
     
+    // Create a local 32-thread pool just for reading
+    let _read_pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(32)
+        .build()?;
+    
+    println!("  Using 32 threads for data reading (optimal for I/O)");
+
     // Step 1: Read metadata
     let metadata_start = Instant::now();
     let tdf_path = d_folder.join("analysis.tdf");
@@ -214,7 +221,7 @@ fn read_timstof_data(d_folder: &Path) -> Result<TimsTOFRawData, Box<dyn Error>> 
     let frames = FrameReader::new(d_folder)?;
     let n_frames = frames.len();
     println!("  ✓ Frame reader initialized: {:.2} ms ({} frames)", 
-             frame_init_start.elapsed().as_secs_f32() * 1000.0, n_frames);
+                frame_init_start.elapsed().as_secs_f32() * 1000.0, n_frames);
     
     // Step 3: Process frames in parallel
     let frame_proc_start = Instant::now();
@@ -334,8 +341,8 @@ fn read_timstof_data(d_folder: &Path) -> Result<TimsTOFRawData, Box<dyn Error>> 
         }
     }
     println!("  ✓ MS1 merge: {:.2} ms ({} peaks)", 
-             ms1_merge_start.elapsed().as_secs_f32() * 1000.0, 
-             global_ms1.mz_values.len());
+                ms1_merge_start.elapsed().as_secs_f32() * 1000.0, 
+                global_ms1.mz_values.len());
 
     // Step 5: Merge MS2 data
     let ms2_merge_start = Instant::now();
@@ -393,7 +400,7 @@ fn read_timstof_data(d_folder: &Path) -> Result<TimsTOFRawData, Box<dyn Error>> 
 }
 
 // ============================================================================
-// OPTIMIZED Index Building Function
+// OPTIMIZED Index Building Function - SIMPLIFIED
 // ============================================================================
 
 fn build_indexed_data(
@@ -401,15 +408,9 @@ fn build_indexed_data(
 ) -> Result<(IndexedTimsTOFData, Vec<((f32, f32), IndexedTimsTOFData)>), Box<dyn Error>> {
     let start = Instant::now();
     println!("\nBuilding indexed data structures...");
+    println!("  Using {} threads for index building", rayon::current_num_threads());
     
-    // Switch to 64 threads for index building
-    println!("  Switching to 64 threads for index building...");
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(64)
-        .build_global()
-        .unwrap();
-    
-    // Use rayon::join to parallelize MS1 and MS2 processing at the highest level
+    // Use the global 64-thread pool directly
     let (ms1_indexed, ms2_indexed_pairs) = rayon::join(
         || {
             let ms1_start = Instant::now();
@@ -441,13 +442,13 @@ fn build_indexed_data(
 }
 
 // ============================================================================
-// Main Function
+// Main Function - UPDATED
 // ============================================================================
 
 fn main() -> Result<(), Box<dyn Error>> {
-    // Start with 32 threads for data reading (optimal for I/O + initial processing)
+    // Set up global 64-thread pool for compute-intensive operations
     rayon::ThreadPoolBuilder::new()
-        .num_threads(32)
+        .num_threads(64)  // 64 threads globally
         .build_global()
         .unwrap();
     
@@ -461,11 +462,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     
     println!("\n========== Optimized TimsTOF Raw Data Reader ==========");
     println!("Data folder: {}", data_path);
-    println!("Initial thread pool size: {}", rayon::current_num_threads());
+    println!("Global thread pool size: {}", rayon::current_num_threads());
     
     let start_time = Instant::now();
     
-    // Read raw data with 32 threads
+    // Read raw data with local 32-thread pool (better for I/O)
     let raw_data = read_timstof_data(d_path)?;
     
     println!("\n========== Reading Complete ==========");
@@ -473,7 +474,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("MS1 data points: {}", raw_data.ms1_data.mz_values.len());
     println!("MS2 windows: {}", raw_data.ms2_windows.len());
     
-    // Build indexed data with 64 threads (switched inside the function)
+    // Build indexed data with global 64-thread pool (better for compute)
     let index_start = Instant::now();
     let (ms1_indexed, ms2_indexed_pairs) = build_indexed_data(raw_data)?;
     
