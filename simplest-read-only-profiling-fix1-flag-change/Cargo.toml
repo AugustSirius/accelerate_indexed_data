@@ -1,0 +1,29 @@
+[package]
+name = "timstof_reader"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "timstof_reader"
+path = "src/main.rs"
+
+[dependencies]
+# Core TimsTOF reading library
+timsrust = "0.4.2"
+
+# Parallel processing
+rayon = "1.8"
+
+# OPTIMIZED release build configuration
+[profile.release]
+opt-level = 3           # Maximum optimization
+lto = "fat"            # Changed from "thin" to "fat" - slower compile, faster runtime
+codegen-units = 1      # Changed from 4 to 1 - allows LLVM to see whole program
+panic = "abort"        # New - removes unwinding code from hot loops
+strip = "symbols"      # Changed from true to "symbols" for clarity
+debug = 0              # New - explicitly disable debug info
+
+# Fast development build with some optimizations
+[profile.dev]
+opt-level = 2
+debug = true
