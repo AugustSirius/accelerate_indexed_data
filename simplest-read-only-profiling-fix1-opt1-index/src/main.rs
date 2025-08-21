@@ -1,4 +1,4 @@
-use std::{error::Error, path::Path, time::Instant, env};
+use std::{error::Error, path::Path, time::Instant};
 use std::collections::HashMap;
 use rayon::prelude::*;
 use timsrust::{converters::ConvertableDomain, readers::{FrameReader, MetadataReader}, MSLevel};
@@ -53,55 +53,6 @@ impl TimsTOFData {
 }
 
 #[derive(Debug, Clone)]
-pub struct IndexedTimsTOFData {
-    pub rt_values_min: Vec<f32>,
-    pub mobility_values: Vec<f32>,
-    pub mz_values: Vec<f32>,
-    pub intensity_values: Vec<u32>,
-    pub frame_indices: Vec<u32>,
-    pub scan_indices: Vec<u32>,
-}
-
-impl IndexedTimsTOFData {
-    /// Build from TimsTOFData with m/z-ascending order
-    pub fn from_timstof_data(data: TimsTOFData) -> Self {
-        let n_peaks = data.mz_values.len();
-        
-        // Build permutation for m/z sorting
-        let mut order: Vec<usize> = (0..n_peaks).collect();
-        order.par_sort_unstable_by(|&a, &b| 
-            data.mz_values[a].partial_cmp(&data.mz_values[b]).unwrap()
-        );
-
-        // Helper functions to reorder - using sequential iteration for better cache performance
-        fn reorder_f32(src: &[f32], ord: &[usize]) -> Vec<f32> {
-            ord.iter().map(|&i| src[i]).collect()
-        }
-        
-        fn reorder_u32(src: &[u32], ord: &[usize]) -> Vec<u32> {
-            ord.iter().map(|&i| src[i]).collect()
-        }
-
-        // Apply permutation to all columns
-        let rt_values = reorder_f32(&data.rt_values_min, &order);
-        let mobility_values = reorder_f32(&data.mobility_values, &order);
-        let mz_values = reorder_f32(&data.mz_values, &order);
-        let intensity_values = reorder_u32(&data.intensity_values, &order);
-        let frame_indices = reorder_u32(&data.frame_indices, &order);
-        let scan_indices = reorder_u32(&data.scan_indices, &order);
-        
-        Self {
-            rt_values_min: rt_values,
-            mobility_values,
-            mz_values,
-            intensity_values,
-            frame_indices,
-            scan_indices,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
 pub struct TimsTOFRawData {
     pub ms1_data: TimsTOFData,
     pub ms2_windows: Vec<((f32, f32), TimsTOFData)>,
@@ -124,6 +75,47 @@ impl MergeFrom for TimsTOFData {
         self.intensity_values.append(&mut other.intensity_values);
         self.frame_indices.append(&mut other.frame_indices);
         self.scan_indices.append(&mut other.scan_indices);
+    }
+}
+
+
+#[derive(Debug, Clone)]
+pub struct IndexedTimsTOFData {
+    pub rt_values_min: Vec<f32>,
+    pub mobility_values: Vec<f32>,
+    pub mz_values: Vec<f32>,
+    pub intensity_values: Vec<u32>,
+    pub frame_indices: Vec<u32>,
+    pub scan_indices: Vec<u32>,
+}
+
+impl IndexedTimsTOFData {
+    /// Build from TimsTOFData with m/z-ascending order
+    pub fn from_timstof_data(data: TimsTOFData) -> Self {
+        let n_peaks = data.mz_values.len();
+        
+        // Build permutation for m/z sorting
+        let mut order: Vec<usize> = (0..n_peaks).collect();
+        order.sort_by(|&a, &b| data.mz_values[a].partial_cmp(&data.mz_values[b]).unwrap());
+
+        // Helper functions to reorder
+        fn reorder_f32(src: &[f32], ord: &[usize]) -> Vec<f32> {
+            ord.iter().map(|&i| src[i]).collect()
+        }
+        
+        fn reorder_u32(src: &[u32], ord: &[usize]) -> Vec<u32> {
+            ord.iter().map(|&i| src[i]).collect()
+        }
+
+        // Apply permutation to all columns
+        Self {
+            rt_values_min: reorder_f32(&data.rt_values_min, &order),
+            mobility_values: reorder_f32(&data.mobility_values, &order),
+            mz_values: reorder_f32(&data.mz_values, &order),
+            intensity_values: reorder_u32(&data.intensity_values, &order),
+            frame_indices: reorder_u32(&data.frame_indices, &order),
+            scan_indices: reorder_u32(&data.scan_indices, &order),
+        }
     }
 }
 
@@ -166,7 +158,7 @@ fn build_scan_lookup(scan_offsets: &[usize]) -> Vec<u32> {
 }
 
 // ============================================================================
-// Core Data Reading Function - EXACT SAME AS NON-INDEXED VERSION
+// Core Data Reading Function - HEAVILY OPTIMIZED
 // ============================================================================
 
 fn read_timstof_data(d_folder: &Path) -> Result<TimsTOFRawData, Box<dyn Error>> {
@@ -317,8 +309,8 @@ fn read_timstof_data(d_folder: &Path) -> Result<TimsTOFRawData, Box<dyn Error>> 
     println!("  ✓ MS1 merge: {:.2} ms ({} peaks)", 
              ms1_merge_start.elapsed().as_secs_f32() * 1000.0, 
              global_ms1.mz_values.len());
-    
-    // Step 5: Merge MS2 data with parallel processing
+
+    // Replace your MS2 merge with parallel version:
     let ms2_merge_start = Instant::now();
     println!("  Merging MS2 data...");
 
@@ -346,7 +338,7 @@ fn read_timstof_data(d_folder: &Path) -> Result<TimsTOFRawData, Box<dyn Error>> 
             ms2_hash.len());
 
     // Step 6: Convert to final format
-    let ms2_convert_start = Instant::now();
+    let ms2_convert_start = Instant::now();  // ADD THIS LINE - was missing!
 
     // Convert to final format
     let mut ms2_vec: Vec<_> = ms2_hash.into_iter()
@@ -378,38 +370,20 @@ fn read_timstof_data(d_folder: &Path) -> Result<TimsTOFRawData, Box<dyn Error>> 
 }
 
 // ============================================================================
-// Index Building Function - OPTIMIZED WITH PARALLEL PROCESSING
+// Index Building Function
 // ============================================================================
 
 fn build_indexed_data(raw_data: TimsTOFRawData) -> Result<(IndexedTimsTOFData, Vec<((f32, f32), IndexedTimsTOFData)>), Box<dyn Error>> {
-    let index_start = Instant::now();
-    println!("\nBuilding indexed data structures...");
-    println!("  Using {} threads for indexing", rayon::current_num_threads());
+    println!("Building indexed data structures...");
     
     // Build index for MS1 data
-    let ms1_index_start = Instant::now();
-    println!("  Building MS1 index ({} peaks)...", raw_data.ms1_data.mz_values.len());
     let ms1_indexed = IndexedTimsTOFData::from_timstof_data(raw_data.ms1_data);
-    println!("  ✓ MS1 index built: {:.2} ms", ms1_index_start.elapsed().as_secs_f32() * 1000.0);
     
-    // Build index for MS2 windows in parallel
-    let ms2_index_start = Instant::now();
-    let total_ms2_peaks: usize = raw_data.ms2_windows.iter()
-        .map(|(_, data)| data.mz_values.len())
-        .sum();
-    println!("  Building MS2 indices ({} windows, {} peaks)...", 
-             raw_data.ms2_windows.len(), total_ms2_peaks);
-    
+    // Build index for MS2 windows
     let ms2_indexed_pairs: Vec<((f32, f32), IndexedTimsTOFData)> = raw_data.ms2_windows
         .into_par_iter()
-        .map(|((low, high), data)| {
-            ((low, high), IndexedTimsTOFData::from_timstof_data(data))
-        })
+        .map(|((low, high), data)| ((low, high), IndexedTimsTOFData::from_timstof_data(data)))
         .collect();
-    
-    println!("  ✓ MS2 indices built: {:.2} ms", ms2_index_start.elapsed().as_secs_f32() * 1000.0);
-    
-    println!("  Total index building time: {:.2} seconds", index_start.elapsed().as_secs_f32());
     
     Ok((ms1_indexed, ms2_indexed_pairs))
 }
@@ -419,81 +393,46 @@ fn build_indexed_data(raw_data: TimsTOFRawData) -> Result<(IndexedTimsTOFData, V
 // ============================================================================
 
 fn main() -> Result<(), Box<dyn Error>> {
-    // Parse command line arguments
-    let args: Vec<String> = env::args().collect();
-    
-    // Get data folder path from command line or use default
-    let data_path = if let Some(path) = args.get(1) {
-        path.clone()
-    } else {
-        // Default path for testing - change this to your default path
-        "/wangshuaiyao/dia-bert-timstof/test_data/CAD20220207yuel_TPHP_DIA_pool1_Slot2-54_1_4382.d".to_string()
-    };
-    
-    let d_path = Path::new(&data_path);
-    if !d_path.exists() {
-        eprintln!("Error: Data folder {:?} not found", d_path);
-        eprintln!("Usage: {} <path_to_timstof_data.d>", args[0]);
-        return Err("Data path not found".into());
-    }
-    
-    // Get total available CPU cores
-    let total_cores = num_cpus::get();
-    
-    // Use 32 threads for reading (matching non-indexed version)
-    let reading_threads = 32.min(total_cores);
-    
-    println!("\n========== Optimized TimsTOF Reader with Indexing ==========");
-    println!("Data folder: {}", data_path);
-    println!("Total CPU cores available: {}", total_cores);
-    
-    let total_start = Instant::now();
-    
-    // Step 1: Set up thread pool for reading (same as non-indexed version)
+    // Configure thread pool for optimal performance
+    // Comment this out to use all available cores, or adjust as needed
     rayon::ThreadPoolBuilder::new()
-        .num_threads(reading_threads)
+        .num_threads(32)  // Set to optimal thread count based on your testing
         .build_global()
         .unwrap();
     
-    println!("Reading phase: {} threads", rayon::current_num_threads());
+    // Hard-coded path to TimsTOF data
+    // let data_path = "/path/to/your/data.d";  // CHANGE THIS TO YOUR PATH
+    // let data_path = "/Users/augustsirius/Desktop/DIA_peak_group_extraction/输入数据文件/raw_data/CAD20220207yuel_TPHP_DIA_pool1_Slot2-54_1_4382.d";
+    let data_path = "/wangshuaiyao/dia-bert-timstof/test_data/CAD20220207yuel_TPHP_DIA_pool1_Slot2-54_1_4382.d";
     
-    // Read raw data with exact same function as non-indexed version
+    let d_path = Path::new(data_path);
+    if !d_path.exists() {
+        return Err(format!("Data folder {:?} not found", d_path).into());
+    }
+    
+    println!("\n========== Optimized TimsTOF Raw Data Reader ==========");
+    println!("Data folder: {}", data_path);
+    println!("Thread pool size: {}", rayon::current_num_threads());
+    
+    let start_time = Instant::now();
+    
+    // Read raw data with optimizations
     let raw_data = read_timstof_data(d_path)?;
     
-    // Step 2: Build indexed data structures with all available cores
-    // Set global thread pool to use all cores for indexing
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(total_cores)
-        .build_global()
-        .unwrap();
+    println!("\n========== Reading Complete ==========");
+    println!("Total time: {:.2} seconds", start_time.elapsed().as_secs_f32());
+    println!("MS1 data points: {}", raw_data.ms1_data.mz_values.len());
+    println!("MS2 windows: {}", raw_data.ms2_windows.len());
     
-    println!("Indexing phase: {} threads", rayon::current_num_threads());
-    
+    // Build indexed data
+    let index_start = Instant::now();
     let (ms1_indexed, ms2_indexed_pairs) = build_indexed_data(raw_data)?;
+    println!("Index building time: {:.2} seconds", index_start.elapsed().as_secs_f32());
     
-    println!("\n========== Processing Complete ==========");
-    println!("Total time: {:.2} seconds", total_start.elapsed().as_secs_f32());
+    println!("\n========== Index Building Complete ==========");
+    println!("Index building time: {:.2} seconds", index_start.elapsed().as_secs_f32());
     println!("MS1 indexed points: {}", ms1_indexed.mz_values.len());
     println!("MS2 indexed windows: {}", ms2_indexed_pairs.len());
-    
-    // Calculate total throughput
-    let total_peaks = ms1_indexed.mz_values.len() + 
-        ms2_indexed_pairs.iter().map(|(_, td)| td.mz_values.len()).sum::<usize>();
-    let elapsed_secs = total_start.elapsed().as_secs_f32();
-    println!("Overall throughput: {:.0} peaks/second", total_peaks as f32 / elapsed_secs);
-    
-    // Verify indexing worked (spot check)
-    if ms1_indexed.mz_values.len() > 1 {
-        println!("\nIndex verification (first 5 m/z values):");
-        for i in 0..5.min(ms1_indexed.mz_values.len()) {
-            println!("  [{:5}] m/z = {:.4}", i, ms1_indexed.mz_values[i]);
-        }
-        
-        // Check if sorted
-        let is_sorted = ms1_indexed.mz_values.windows(2)
-            .all(|w| w[0] <= w[1]);
-        println!("MS1 index is sorted by m/z: {}", is_sorted);
-    }
     
     Ok(())
 }
