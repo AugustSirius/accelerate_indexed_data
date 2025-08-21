@@ -341,14 +341,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Configure thread pool for optimal performance
     // Comment this out to use all available cores, or adjust as needed
     rayon::ThreadPoolBuilder::new()
-        .num_threads(40)  // Set to optimal thread count based on your testing
+        .num_threads(32)  // Set to optimal thread count based on your testing
         .build_global()
         .unwrap();
     
     // Hard-coded path to TimsTOF data
     // let data_path = "/path/to/your/data.d";  // CHANGE THIS TO YOUR PATH
-    // let data_path = "/Users/augustsirius/Desktop/DIA_peak_group_extraction/输入数据文件/raw_data/CAD20220207yuel_TPHP_DIA_pool1_Slot2-54_1_4382.d";
-    let data_path = "/wangshuaiyao/dia-bert-timstof/test_data/CAD20220207yuel_TPHP_DIA_pool1_Slot2-54_1_4382.d";
+    let data_path = "/Users/augustsirius/Desktop/DIA_peak_group_extraction/输入数据文件/raw_data/CAD20220207yuel_TPHP_DIA_pool1_Slot2-54_1_4382.d";
+    // let data_path = "/wangshuaiyao/dia-bert-timstof/test_data/CAD20220207yuel_TPHP_DIA_pool1_Slot2-54_1_4382.d";
     
     let d_path = Path::new(data_path);
     if !d_path.exists() {
