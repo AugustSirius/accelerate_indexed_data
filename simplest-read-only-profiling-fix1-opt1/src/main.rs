@@ -337,6 +337,13 @@ fn read_timstof_data(d_folder: &Path) -> Result<TimsTOFRawData, Box<dyn Error>> 
         }
     });
 
+    println!("  ✓ MS2 merge: {:.2} ms ({} windows)", 
+            ms2_merge_start.elapsed().as_secs_f32() * 1000.0, 
+            ms2_hash.len());
+
+    // Step 6: Convert to final format
+    let ms2_convert_start = Instant::now();  // ADD THIS LINE - was missing!
+
     // Convert to final format
     let mut ms2_vec: Vec<_> = ms2_hash.into_iter()
         .map(|((q_low, q_high), mutex_td)| {
@@ -346,10 +353,10 @@ fn read_timstof_data(d_folder: &Path) -> Result<TimsTOFRawData, Box<dyn Error>> 
             ((low, high), td)
         })
         .collect();
-    
+
     // Sort by window for consistent output
     ms2_vec.sort_by(|a, b| a.0.0.partial_cmp(&b.0.0).unwrap());
-    
+
     println!("  ✓ MS2 convert: {:.2} ms", ms2_convert_start.elapsed().as_secs_f32() * 1000.0);
     
     println!("  MS1 data points: {}", global_ms1.mz_values.len());
@@ -380,8 +387,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     
     // Hard-coded path to TimsTOF data
     // let data_path = "/path/to/your/data.d";  // CHANGE THIS TO YOUR PATH
-    // let data_path = "/Users/augustsirius/Desktop/DIA_peak_group_extraction/输入数据文件/raw_data/CAD20220207yuel_TPHP_DIA_pool1_Slot2-54_1_4382.d";
-    let data_path = "/wangshuaiyao/dia-bert-timstof/test_data/CAD20220207yuel_TPHP_DIA_pool1_Slot2-54_1_4382.d";
+    let data_path = "/Users/augustsirius/Desktop/DIA_peak_group_extraction/输入数据文件/raw_data/CAD20220207yuel_TPHP_DIA_pool1_Slot2-54_1_4382.d";
+    // let data_path = "/wangshuaiyao/dia-bert-timstof/test_data/CAD20220207yuel_TPHP_DIA_pool1_Slot2-54_1_4382.d";
     
     let d_path = Path::new(data_path);
     if !d_path.exists() {
