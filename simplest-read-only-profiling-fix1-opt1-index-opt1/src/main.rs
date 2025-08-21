@@ -130,13 +130,6 @@ fn build_scan_lookup(scan_offsets: &[usize]) -> Vec<u32> {
 fn read_timstof_data(d_folder: &Path) -> Result<TimsTOFRawData, Box<dyn Error>> {
     let start_time = Instant::now();
     println!("Reading TimsTOF data from: {:?}", d_folder);
-    
-    // // Create a local 32-thread pool just for reading
-    // let _read_pool = rayon::ThreadPoolBuilder::new()
-    //     .num_threads(32)
-    //     .build()?;
-    
-    // println!("  Using 32 threads for data reading (optimal for I/O)");
 
     // Step 1: Read metadata
     let metadata_start = Instant::now();
@@ -445,7 +438,7 @@ fn build_indexed_data(
 fn main() -> Result<(), Box<dyn Error>> {
     // Set up global 64-thread pool for compute-intensive operations
     rayon::ThreadPoolBuilder::new()
-        .num_threads(64)  // 64 threads globally
+        .num_threads(32)  // 64 threads globally
         .build_global()
         .unwrap();
     
