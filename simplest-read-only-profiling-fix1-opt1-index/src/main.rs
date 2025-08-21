@@ -73,20 +73,16 @@ impl IndexedTimsTOFData {
             data.mz_values[a].partial_cmp(&data.mz_values[b]).unwrap()
         );
 
-        // Helper functions to reorder - using parallel iteration for large datasets
+        // Helper functions to reorder - using sequential iteration for better cache performance
         fn reorder_f32(src: &[f32], ord: &[usize]) -> Vec<f32> {
-            let mut result = Vec::with_capacity(ord.len());
-            result.par_extend(ord.par_iter().map(|&i| src[i]));
-            result
+            ord.iter().map(|&i| src[i]).collect()
         }
         
         fn reorder_u32(src: &[u32], ord: &[usize]) -> Vec<u32> {
-            let mut result = Vec::with_capacity(ord.len());
-            result.par_extend(ord.par_iter().map(|&i| src[i]));
-            result
+            ord.iter().map(|&i| src[i]).collect()
         }
 
-        // Apply permutation to all columns in parallel
+        // Apply permutation to all columns
         let rt_values = reorder_f32(&data.rt_values_min, &order);
         let mobility_values = reorder_f32(&data.mobility_values, &order);
         let mz_values = reorder_f32(&data.mz_values, &order);
@@ -170,231 +166,222 @@ fn build_scan_lookup(scan_offsets: &[usize]) -> Vec<u32> {
 }
 
 // ============================================================================
-// Core Data Reading Function - HEAVILY OPTIMIZED
+// Core Data Reading Function - EXACT SAME AS NON-INDEXED VERSION
 // ============================================================================
 
-fn read_timstof_data(d_folder: &Path, reading_threads: usize) -> Result<TimsTOFRawData, Box<dyn Error + Send + Sync>> {
+fn read_timstof_data(d_folder: &Path) -> Result<TimsTOFRawData, Box<dyn Error>> {
     let start_time = Instant::now();
     println!("Reading TimsTOF data from: {:?}", d_folder);
-    println!("  Using {} threads for reading", reading_threads);
     
-    // Create a scoped thread pool for reading
-    let reading_pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(reading_threads)
-        .build()?;
+    // Step 1: Read metadata
+    let metadata_start = Instant::now();
+    let tdf_path = d_folder.join("analysis.tdf");
+    let meta = MetadataReader::new(&tdf_path)?;
+    let mz_cv = Arc::new(meta.mz_converter);
+    let im_cv = Arc::new(meta.im_converter);
+    println!("  ✓ Metadata read: {:.2} ms", metadata_start.elapsed().as_secs_f32() * 1000.0);
     
-    let result = reading_pool.install(|| -> Result<TimsTOFRawData, Box<dyn Error + Send + Sync>> {
-        // Step 1: Read metadata
-        let metadata_start = Instant::now();
-        let tdf_path = d_folder.join("analysis.tdf");
-        let meta = MetadataReader::new(&tdf_path)?;
-        let mz_cv = Arc::new(meta.mz_converter);
-        let im_cv = Arc::new(meta.im_converter);
-        println!("  ✓ Metadata read: {:.2} ms", metadata_start.elapsed().as_secs_f32() * 1000.0);
+    // Step 2: Initialize frame reader
+    let frame_init_start = Instant::now();
+    let frames = FrameReader::new(d_folder)?;
+    let n_frames = frames.len();
+    println!("  ✓ Frame reader initialized: {:.2} ms ({} frames)", 
+             frame_init_start.elapsed().as_secs_f32() * 1000.0, n_frames);
+    
+    // Step 3: Process frames in parallel with optimizations
+    let frame_proc_start = Instant::now();
+    println!("  Processing {} frames in parallel...", n_frames);
+    
+    let splits: Vec<FrameSplit> = (0..n_frames).into_par_iter().map(|idx| {
+        let frame = frames.get(idx).expect("frame read");
+        let rt_min = frame.rt_in_seconds as f32 / 60.0;
+        let mut ms1 = TimsTOFData::new();
+        let mut ms2_pairs: Vec<((u32,u32), TimsTOFData)> = Vec::new();
         
-        // Step 2: Initialize frame reader
-        let frame_init_start = Instant::now();
-        let frames = FrameReader::new(d_folder)?;
-        let n_frames = frames.len();
-        println!("  ✓ Frame reader initialized: {:.2} ms ({} frames)", 
-                 frame_init_start.elapsed().as_secs_f32() * 1000.0, n_frames);
-        
-        // Step 3: Process frames in parallel with optimizations
-        let frame_proc_start = Instant::now();
-        println!("  Processing {} frames in parallel...", n_frames);
-        
-        let splits: Vec<FrameSplit> = (0..n_frames).into_par_iter().map(|idx| {
-            let frame = frames.get(idx).expect("frame read");
-            let rt_min = frame.rt_in_seconds as f32 / 60.0;
-            let mut ms1 = TimsTOFData::new();
-            let mut ms2_pairs: Vec<((u32,u32), TimsTOFData)> = Vec::new();
-            
-            match frame.ms_level {
-                MSLevel::MS1 => {
-                    let n_peaks = frame.tof_indices.len();
-                    ms1 = TimsTOFData::with_capacity(n_peaks);
+        match frame.ms_level {
+            MSLevel::MS1 => {
+                let n_peaks = frame.tof_indices.len();
+                ms1 = TimsTOFData::with_capacity(n_peaks);
+                
+                // OPTIMIZATION: Build scan lookup table once per frame
+                let scan_lookup = build_scan_lookup(&frame.scan_offsets);
+                
+                // OPTIMIZATION: Use iterators and pre-allocated capacity
+                for (p_idx, (&tof, &intensity)) in frame.tof_indices.iter()
+                    .zip(frame.intensities.iter())
+                    .enumerate() 
+                {
+                    let mz = mz_cv.convert(tof as f64) as f32;
                     
-                    // OPTIMIZATION: Build scan lookup table once per frame
-                    let scan_lookup = build_scan_lookup(&frame.scan_offsets);
+                    // CRITICAL: O(1) lookup instead of O(n) search
+                    let scan = if p_idx < scan_lookup.len() {
+                        scan_lookup[p_idx]
+                    } else {
+                        (frame.scan_offsets.len() - 1) as u32
+                    };
                     
-                    // OPTIMIZATION: Use iterators and pre-allocated capacity
+                    let im = im_cv.convert(scan as f64) as f32;
+                    
+                    ms1.rt_values_min.push(rt_min);
+                    ms1.mobility_values.push(im);
+                    ms1.mz_values.push(mz);
+                    ms1.intensity_values.push(intensity);
+                    ms1.frame_indices.push(frame.index as u32);
+                    ms1.scan_indices.push(scan);
+                }
+            }
+            MSLevel::MS2 => {
+                let qs = &frame.quadrupole_settings;
+                ms2_pairs.reserve(qs.isolation_mz.len());
+                
+                // OPTIMIZATION: Build scan lookup table once for MS2 frame
+                let scan_lookup = build_scan_lookup(&frame.scan_offsets);
+                
+                for win in 0..qs.isolation_mz.len() {
+                    if win >= qs.isolation_width.len() { break; }
+                    
+                    let prec_mz = qs.isolation_mz[win] as f32;
+                    let width = qs.isolation_width[win] as f32;
+                    let low = prec_mz - width * 0.5;
+                    let high = prec_mz + width * 0.5;
+                    let key = (quantize(low), quantize(high));
+                    
+                    // OPTIMIZATION: Pre-count peaks in window for capacity
+                    let win_start = qs.scan_starts[win];
+                    let win_end = qs.scan_ends[win];
+                    
+                    // Estimate capacity (rough but helps)
+                    let estimated_peaks = frame.tof_indices.len() / qs.isolation_mz.len();
+                    let mut td = TimsTOFData::with_capacity(estimated_peaks);
+                    
                     for (p_idx, (&tof, &intensity)) in frame.tof_indices.iter()
                         .zip(frame.intensities.iter())
                         .enumerate() 
                     {
-                        let mz = mz_cv.convert(tof as f64) as f32;
-                        
-                        // CRITICAL: O(1) lookup instead of O(n) search
+                        // CRITICAL: O(1) lookup
                         let scan = if p_idx < scan_lookup.len() {
                             scan_lookup[p_idx]
                         } else {
                             (frame.scan_offsets.len() - 1) as u32
                         };
                         
+                        // Quick bounds check
+                        if scan < win_start as u32 || scan > win_end as u32 { 
+                            continue; 
+                        }
+                        
+                        let mz = mz_cv.convert(tof as f64) as f32;
                         let im = im_cv.convert(scan as f64) as f32;
                         
-                        ms1.rt_values_min.push(rt_min);
-                        ms1.mobility_values.push(im);
-                        ms1.mz_values.push(mz);
-                        ms1.intensity_values.push(intensity);
-                        ms1.frame_indices.push(frame.index as u32);
-                        ms1.scan_indices.push(scan);
+                        td.rt_values_min.push(rt_min);
+                        td.mobility_values.push(im);
+                        td.mz_values.push(mz);
+                        td.intensity_values.push(intensity);
+                        td.frame_indices.push(frame.index as u32);
+                        td.scan_indices.push(scan);
+                    }
+                    
+                    if !td.mz_values.is_empty() {
+                        ms2_pairs.push((key, td));
                     }
                 }
-                MSLevel::MS2 => {
-                    let qs = &frame.quadrupole_settings;
-                    ms2_pairs.reserve(qs.isolation_mz.len());
-                    
-                    // OPTIMIZATION: Build scan lookup table once for MS2 frame
-                    let scan_lookup = build_scan_lookup(&frame.scan_offsets);
-                    
-                    for win in 0..qs.isolation_mz.len() {
-                        if win >= qs.isolation_width.len() { break; }
-                        
-                        let prec_mz = qs.isolation_mz[win] as f32;
-                        let width = qs.isolation_width[win] as f32;
-                        let low = prec_mz - width * 0.5;
-                        let high = prec_mz + width * 0.5;
-                        let key = (quantize(low), quantize(high));
-                        
-                        // OPTIMIZATION: Pre-count peaks in window for capacity
-                        let win_start = qs.scan_starts[win];
-                        let win_end = qs.scan_ends[win];
-                        
-                        // Estimate capacity (rough but helps)
-                        let estimated_peaks = frame.tof_indices.len() / qs.isolation_mz.len();
-                        let mut td = TimsTOFData::with_capacity(estimated_peaks);
-                        
-                        for (p_idx, (&tof, &intensity)) in frame.tof_indices.iter()
-                            .zip(frame.intensities.iter())
-                            .enumerate() 
-                        {
-                            // CRITICAL: O(1) lookup
-                            let scan = if p_idx < scan_lookup.len() {
-                                scan_lookup[p_idx]
-                            } else {
-                                (frame.scan_offsets.len() - 1) as u32
-                            };
-                            
-                            // Quick bounds check
-                            if scan < win_start as u32 || scan > win_end as u32 { 
-                                continue; 
-                            }
-                            
-                            let mz = mz_cv.convert(tof as f64) as f32;
-                            let im = im_cv.convert(scan as f64) as f32;
-                            
-                            td.rt_values_min.push(rt_min);
-                            td.mobility_values.push(im);
-                            td.mz_values.push(mz);
-                            td.intensity_values.push(intensity);
-                            td.frame_indices.push(frame.index as u32);
-                            td.scan_indices.push(scan);
-                        }
-                        
-                        if !td.mz_values.is_empty() {
-                            ms2_pairs.push((key, td));
-                        }
-                    }
-                }
-                _ => {}
             }
-            FrameSplit { ms1, ms2: ms2_pairs }
-        }).collect();
-        
-        println!("  ✓ Frame processing: {:.2} ms", frame_proc_start.elapsed().as_secs_f32() * 1000.0);
-        
-        // Step 4: Merge MS1 data - OPTIMIZED
-        let ms1_merge_start = Instant::now();
-        println!("  Merging MS1 data...");
-        
-        // OPTIMIZATION: Calculate exact size for single allocation
-        let ms1_total_size: usize = splits.par_iter()
-            .map(|s| s.ms1.mz_values.len())
-            .sum();
-        
-        let mut global_ms1 = TimsTOFData::with_capacity(ms1_total_size);
-        
-        for split in &splits {
-            if !split.ms1.mz_values.is_empty() {
-                global_ms1.rt_values_min.extend(&split.ms1.rt_values_min);
-                global_ms1.mobility_values.extend(&split.ms1.mobility_values);
-                global_ms1.mz_values.extend(&split.ms1.mz_values);
-                global_ms1.intensity_values.extend(&split.ms1.intensity_values);
-                global_ms1.frame_indices.extend(&split.ms1.frame_indices);
-                global_ms1.scan_indices.extend(&split.ms1.scan_indices);
+            _ => {}
+        }
+        FrameSplit { ms1, ms2: ms2_pairs }
+    }).collect();
+    
+    println!("  ✓ Frame processing: {:.2} ms", frame_proc_start.elapsed().as_secs_f32() * 1000.0);
+    
+    // Step 4: Merge MS1 data - OPTIMIZED
+    let ms1_merge_start = Instant::now();
+    println!("  Merging MS1 data...");
+    
+    // OPTIMIZATION: Calculate exact size for single allocation
+    let ms1_total_size: usize = splits.par_iter()
+        .map(|s| s.ms1.mz_values.len())
+        .sum();
+    
+    let mut global_ms1 = TimsTOFData::with_capacity(ms1_total_size);
+    
+    for split in &splits {
+        if !split.ms1.mz_values.is_empty() {
+            global_ms1.rt_values_min.extend(&split.ms1.rt_values_min);
+            global_ms1.mobility_values.extend(&split.ms1.mobility_values);
+            global_ms1.mz_values.extend(&split.ms1.mz_values);
+            global_ms1.intensity_values.extend(&split.ms1.intensity_values);
+            global_ms1.frame_indices.extend(&split.ms1.frame_indices);
+            global_ms1.scan_indices.extend(&split.ms1.scan_indices);
+        }
+    }
+    println!("  ✓ MS1 merge: {:.2} ms ({} peaks)", 
+             ms1_merge_start.elapsed().as_secs_f32() * 1000.0, 
+             global_ms1.mz_values.len());
+    
+    // Step 5: Merge MS2 data with parallel processing
+    let ms2_merge_start = Instant::now();
+    println!("  Merging MS2 data...");
+
+    use std::sync::Mutex;
+
+    // Create thread-safe hash map
+    let ms2_hash: dashmap::DashMap<(u32, u32), Mutex<TimsTOFData>> = dashmap::DashMap::with_capacity(64);
+
+    // Parallel merge
+    splits.into_par_iter().for_each(|mut split| {
+        for (key, mut td) in split.ms2 {
+            match ms2_hash.entry(key) {
+                dashmap::mapref::entry::Entry::Occupied(mut entry) => {
+                    entry.get_mut().lock().unwrap().merge_from(&mut td);
+                }
+                dashmap::mapref::entry::Entry::Vacant(entry) => {
+                    entry.insert(Mutex::new(td));
+                }
             }
         }
-        println!("  ✓ MS1 merge: {:.2} ms ({} peaks)", 
-                 ms1_merge_start.elapsed().as_secs_f32() * 1000.0, 
-                 global_ms1.mz_values.len());
-        
-        // Step 5: Merge MS2 data with parallel processing
-        let ms2_merge_start = Instant::now();
-        println!("  Merging MS2 data...");
-
-        use std::sync::Mutex;
-
-        // Create thread-safe hash map
-        let ms2_hash: dashmap::DashMap<(u32, u32), Mutex<TimsTOFData>> = dashmap::DashMap::with_capacity(64);
-
-        // Parallel merge
-        splits.into_par_iter().for_each(|mut split| {
-            for (key, mut td) in split.ms2 {
-                match ms2_hash.entry(key) {
-                    dashmap::mapref::entry::Entry::Occupied(mut entry) => {
-                        entry.get_mut().lock().unwrap().merge_from(&mut td);
-                    }
-                    dashmap::mapref::entry::Entry::Vacant(entry) => {
-                        entry.insert(Mutex::new(td));
-                    }
-                }
-            }
-        });
-
-        println!("  ✓ MS2 merge: {:.2} ms ({} windows)", 
-                ms2_merge_start.elapsed().as_secs_f32() * 1000.0, 
-                ms2_hash.len());
-
-        // Step 6: Convert to final format
-        let ms2_convert_start = Instant::now();
-
-        // Convert to final format
-        let mut ms2_vec: Vec<_> = ms2_hash.into_iter()
-            .map(|((q_low, q_high), mutex_td)| {
-                let td = mutex_td.into_inner().unwrap();
-                let low = q_low as f32 / 10_000.0;
-                let high = q_high as f32 / 10_000.0;
-                ((low, high), td)
-            })
-            .collect();
-
-        // Sort by window for consistent output
-        ms2_vec.sort_by(|a, b| a.0.0.partial_cmp(&b.0.0).unwrap());
-
-        println!("  ✓ MS2 convert: {:.2} ms", ms2_convert_start.elapsed().as_secs_f32() * 1000.0);
-        
-        println!("  MS1 data points: {}", global_ms1.mz_values.len());
-        println!("  MS2 windows: {}", ms2_vec.len());
-        
-        let total_ms2_peaks: usize = ms2_vec.iter().map(|(_, td)| td.mz_values.len()).sum();
-        println!("  MS2 data points: {}", total_ms2_peaks);
-        
-        Ok(TimsTOFRawData {
-            ms1_data: global_ms1,
-            ms2_windows: ms2_vec,
-        })
     });
+
+    println!("  ✓ MS2 merge: {:.2} ms ({} windows)", 
+            ms2_merge_start.elapsed().as_secs_f32() * 1000.0, 
+            ms2_hash.len());
+
+    // Step 6: Convert to final format
+    let ms2_convert_start = Instant::now();
+
+    // Convert to final format
+    let mut ms2_vec: Vec<_> = ms2_hash.into_iter()
+        .map(|((q_low, q_high), mutex_td)| {
+            let td = mutex_td.into_inner().unwrap();
+            let low = q_low as f32 / 10_000.0;
+            let high = q_high as f32 / 10_000.0;
+            ((low, high), td)
+        })
+        .collect();
+
+    // Sort by window for consistent output
+    ms2_vec.sort_by(|a, b| a.0.0.partial_cmp(&b.0.0).unwrap());
+
+    println!("  ✓ MS2 convert: {:.2} ms", ms2_convert_start.elapsed().as_secs_f32() * 1000.0);
     
-    println!("\n  Total reading time: {:.2} seconds", start_time.elapsed().as_secs_f32());
-    result
+    println!("  MS1 data points: {}", global_ms1.mz_values.len());
+    println!("  MS2 windows: {}", ms2_vec.len());
+    
+    let total_ms2_peaks: usize = ms2_vec.iter().map(|(_, td)| td.mz_values.len()).sum();
+    println!("  MS2 data points: {}", total_ms2_peaks);
+    
+    println!("\n  Total processing time: {:.2} seconds", start_time.elapsed().as_secs_f32());
+    
+    Ok(TimsTOFRawData {
+        ms1_data: global_ms1,
+        ms2_windows: ms2_vec,
+    })
 }
 
 // ============================================================================
 // Index Building Function - OPTIMIZED WITH PARALLEL PROCESSING
 // ============================================================================
 
-fn build_indexed_data(raw_data: TimsTOFRawData) -> Result<(IndexedTimsTOFData, Vec<((f32, f32), IndexedTimsTOFData)>), Box<dyn Error + Send + Sync>> {
+fn build_indexed_data(raw_data: TimsTOFRawData) -> Result<(IndexedTimsTOFData, Vec<((f32, f32), IndexedTimsTOFData)>), Box<dyn Error>> {
     let index_start = Instant::now();
     println!("\nBuilding indexed data structures...");
     println!("  Using {} threads for indexing", rayon::current_num_threads());
@@ -431,7 +418,7 @@ fn build_indexed_data(raw_data: TimsTOFRawData) -> Result<(IndexedTimsTOFData, V
 // Main Function
 // ============================================================================
 
-fn main() -> Result<(), Box<dyn Error + Send + Sync>> {  // Changed return type here
+fn main() -> Result<(), Box<dyn Error>> {
     // Parse command line arguments
     let args: Vec<String> = env::args().collect();
     
@@ -453,20 +440,25 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {  // Changed return type 
     // Get total available CPU cores
     let total_cores = num_cpus::get();
     
-    // Cap reading threads at 32, but use all cores for indexing
-    const MAX_READING_THREADS: usize = 32;
-    let reading_threads = total_cores.min(MAX_READING_THREADS);
+    // Use 32 threads for reading (matching non-indexed version)
+    let reading_threads = 32.min(total_cores);
     
     println!("\n========== Optimized TimsTOF Reader with Indexing ==========");
     println!("Data folder: {}", data_path);
     println!("Total CPU cores available: {}", total_cores);
-    println!("Reading phase: {} threads (capped at {})", reading_threads, MAX_READING_THREADS);
-    println!("Indexing phase: {} threads (all cores)", total_cores);
     
     let total_start = Instant::now();
     
-    // Step 1: Read raw data with capped thread pool
-    let raw_data = read_timstof_data(d_path, reading_threads)?;
+    // Step 1: Set up thread pool for reading (same as non-indexed version)
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(reading_threads)
+        .build_global()
+        .unwrap();
+    
+    println!("Reading phase: {} threads", rayon::current_num_threads());
+    
+    // Read raw data with exact same function as non-indexed version
+    let raw_data = read_timstof_data(d_path)?;
     
     // Step 2: Build indexed data structures with all available cores
     // Set global thread pool to use all cores for indexing
@@ -474,6 +466,8 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {  // Changed return type 
         .num_threads(total_cores)
         .build_global()
         .unwrap();
+    
+    println!("Indexing phase: {} threads", rayon::current_num_threads());
     
     let (ms1_indexed, ms2_indexed_pairs) = build_indexed_data(raw_data)?;
     
