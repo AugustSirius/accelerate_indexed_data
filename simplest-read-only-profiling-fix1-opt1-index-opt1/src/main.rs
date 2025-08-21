@@ -88,76 +88,6 @@ pub struct IndexedTimsTOFData {
 }
 
 // ============================================================================
-// OPTIMIZED INDEX BUILDING
-// ============================================================================
-
-/// Convert IEEE-754 f32 into a monotone u32 key for fast radix sorting
-#[inline]
-fn f32_to_key_bits(f: f32) -> u32 {
-    let bits = f.to_bits();
-    bits ^ (((bits >> 31) as i32) >> 1) as u32
-}
-
-/// Fast, parallel builder that produces the exact same output as before
-/// but 5-10x faster
-fn from_timstof_data_fast(src: TimsTOFData) -> IndexedTimsTOFData {
-    let n = src.mz_values.len();
-    
-    if n == 0 {
-        return IndexedTimsTOFData {
-            rt_values_min: Vec::new(),
-            mobility_values: Vec::new(),
-            mz_values: Vec::new(),
-            intensity_values: Vec::new(),
-            frame_indices: Vec::new(),
-            scan_indices: Vec::new(),
-        };
-    }
-
-    // Step 1: Build and sort an index vector (cheap - only 4 bytes per entry)
-    let mut order: Vec<u32> = (0..n as u32).collect();
-    
-    // Parallel radix-optimized sort
-    order.par_sort_unstable_by_key(|&i| {
-        // SAFETY: i < n by construction
-        f32_to_key_bits(unsafe { *src.mz_values.get_unchecked(i as usize) })
-    });
-
-    // Step 2: Allocate destination once, then fill in parallel
-    // No pushes, no reallocation, completely cache-friendly
-    let mut out = IndexedTimsTOFData {
-        rt_values_min: vec![0.0; n],
-        mobility_values: vec![0.0; n],
-        mz_values: vec![0.0; n],
-        intensity_values: vec![0; n],
-        frame_indices: vec![0; n],
-        scan_indices: vec![0; n],
-    };
-
-    // Parallel scatter-gather to build sorted columns
-    out.rt_values_min
-        .par_iter_mut()
-        .zip(out.mobility_values.par_iter_mut())
-        .zip(out.mz_values.par_iter_mut())
-        .zip(out.intensity_values.par_iter_mut())
-        .zip(out.frame_indices.par_iter_mut())
-        .zip(out.scan_indices.par_iter_mut())
-        .enumerate()
-        .for_each(|(dest, (((((rt, im), mz), inten), frame), scan))| {
-            let src_idx = order[dest] as usize;
-            
-            *rt = src.rt_values_min[src_idx];
-            *im = src.mobility_values[src_idx];
-            *mz = src.mz_values[src_idx];
-            *inten = src.intensity_values[src_idx];
-            *frame = src.frame_indices[src_idx];
-            *scan = src.scan_indices[src_idx];
-        });
-
-    out
-}
-
-// ============================================================================
 // Helper Functions
 // ============================================================================
 
@@ -201,12 +131,12 @@ fn read_timstof_data(d_folder: &Path) -> Result<TimsTOFRawData, Box<dyn Error>> 
     let start_time = Instant::now();
     println!("Reading TimsTOF data from: {:?}", d_folder);
     
-    // Create a local 32-thread pool just for reading
-    let _read_pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(32)
-        .build()?;
+    // // Create a local 32-thread pool just for reading
+    // let _read_pool = rayon::ThreadPoolBuilder::new()
+    //     .num_threads(32)
+    //     .build()?;
     
-    println!("  Using 32 threads for data reading (optimal for I/O)");
+    // println!("  Using 32 threads for data reading (optimal for I/O)");
 
     // Step 1: Read metadata
     let metadata_start = Instant::now();
@@ -402,6 +332,73 @@ fn read_timstof_data(d_folder: &Path) -> Result<TimsTOFRawData, Box<dyn Error>> 
 // ============================================================================
 // OPTIMIZED Index Building Function - SIMPLIFIED
 // ============================================================================
+
+/// Convert IEEE-754 f32 into a monotone u32 key for fast radix sorting
+#[inline]
+fn f32_to_key_bits(f: f32) -> u32 {
+    let bits = f.to_bits();
+    bits ^ (((bits >> 31) as i32) >> 1) as u32
+}
+
+/// Fast, parallel builder that produces the exact same output as before
+/// but 5-10x faster
+fn from_timstof_data_fast(src: TimsTOFData) -> IndexedTimsTOFData {
+    let n = src.mz_values.len();
+    
+    if n == 0 {
+        return IndexedTimsTOFData {
+            rt_values_min: Vec::new(),
+            mobility_values: Vec::new(),
+            mz_values: Vec::new(),
+            intensity_values: Vec::new(),
+            frame_indices: Vec::new(),
+            scan_indices: Vec::new(),
+        };
+    }
+
+    // Step 1: Build and sort an index vector (cheap - only 4 bytes per entry)
+    let mut order: Vec<u32> = (0..n as u32).collect();
+    
+    // Parallel radix-optimized sort
+    order.par_sort_unstable_by_key(|&i| {
+        // SAFETY: i < n by construction
+        f32_to_key_bits(unsafe { *src.mz_values.get_unchecked(i as usize) })
+    });
+
+    // Step 2: Allocate destination once, then fill in parallel
+    // No pushes, no reallocation, completely cache-friendly
+    let mut out = IndexedTimsTOFData {
+        rt_values_min: vec![0.0; n],
+        mobility_values: vec![0.0; n],
+        mz_values: vec![0.0; n],
+        intensity_values: vec![0; n],
+        frame_indices: vec![0; n],
+        scan_indices: vec![0; n],
+    };
+
+    // Parallel scatter-gather to build sorted columns
+    out.rt_values_min
+        .par_iter_mut()
+        .zip(out.mobility_values.par_iter_mut())
+        .zip(out.mz_values.par_iter_mut())
+        .zip(out.intensity_values.par_iter_mut())
+        .zip(out.frame_indices.par_iter_mut())
+        .zip(out.scan_indices.par_iter_mut())
+        .enumerate()
+        .for_each(|(dest, (((((rt, im), mz), inten), frame), scan))| {
+            let src_idx = order[dest] as usize;
+            
+            *rt = src.rt_values_min[src_idx];
+            *im = src.mobility_values[src_idx];
+            *mz = src.mz_values[src_idx];
+            *inten = src.intensity_values[src_idx];
+            *frame = src.frame_indices[src_idx];
+            *scan = src.scan_indices[src_idx];
+        });
+
+    out
+}
+
 
 fn build_indexed_data(
     raw_data: TimsTOFRawData
