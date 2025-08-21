@@ -1,7 +1,7 @@
 use std::{error::Error, path::Path, time::Instant};
 use std::collections::HashMap;
 use rayon::prelude::*;
-use timsrust::{converters::ConvertableDomain, readers::{FrameReader, MetadataReader}, MSLevel};
+use timsrust::{converters::{ConvertableDomain, Scan2ImConverter}, readers::{FrameReader, MetadataReader}, MSLevel};
 use std::sync::Arc;
 
 // ============================================================================
@@ -82,7 +82,7 @@ impl MergeFrom for TimsTOFData {
 // Helper Functions - OPTIMIZED
 // ============================================================================
 
-#[inline]
+#[inline(always)]
 fn quantize(x: f32) -> u32 {
     (x * 10_000.0).round() as u32
 }
@@ -114,6 +114,15 @@ fn build_scan_lookup(scan_offsets: &[usize]) -> Vec<u32> {
     }
     
     lookup
+}
+
+// NEW OPTIMIZATION: Build IM cache for O(1) mobility lookups
+// Fixed to use concrete type instead of trait object
+#[inline]
+fn build_im_cache(im_cv: &Arc<Scan2ImConverter>, max_scans: usize) -> Vec<f32> {
+    (0..max_scans)
+        .map(|scan| im_cv.convert(scan as f64) as f32)
+        .collect()
 }
 
 // ============================================================================
@@ -157,6 +166,9 @@ fn read_timstof_data(d_folder: &Path) -> Result<TimsTOFRawData, Box<dyn Error>> 
                 // OPTIMIZATION: Build scan lookup table once per frame
                 let scan_lookup = build_scan_lookup(&frame.scan_offsets);
                 
+                // NEW OPTIMIZATION: Pre-compute all mobility values for this frame
+                let im_cache = build_im_cache(&im_cv, frame.scan_offsets.len());
+                
                 // OPTIMIZATION: Use iterators and pre-allocated capacity
                 for (p_idx, (&tof, &intensity)) in frame.tof_indices.iter()
                     .zip(frame.intensities.iter())
@@ -171,7 +183,8 @@ fn read_timstof_data(d_folder: &Path) -> Result<TimsTOFRawData, Box<dyn Error>> 
                         (frame.scan_offsets.len() - 1) as u32
                     };
                     
-                    let im = im_cv.convert(scan as f64) as f32;
+                    // NEW: O(1) lookup instead of conversion
+                    let im = im_cache[scan as usize];
                     
                     ms1.rt_values_min.push(rt_min);
                     ms1.mobility_values.push(im);
@@ -187,6 +200,9 @@ fn read_timstof_data(d_folder: &Path) -> Result<TimsTOFRawData, Box<dyn Error>> 
                 
                 // OPTIMIZATION: Build scan lookup table once for MS2 frame
                 let scan_lookup = build_scan_lookup(&frame.scan_offsets);
+                
+                // NEW OPTIMIZATION: Pre-compute all mobility values for this frame
+                let im_cache = build_im_cache(&im_cv, frame.scan_offsets.len());
                 
                 for win in 0..qs.isolation_mz.len() {
                     if win >= qs.isolation_width.len() { break; }
@@ -222,7 +238,9 @@ fn read_timstof_data(d_folder: &Path) -> Result<TimsTOFRawData, Box<dyn Error>> 
                         }
                         
                         let mz = mz_cv.convert(tof as f64) as f32;
-                        let im = im_cv.convert(scan as f64) as f32;
+                        
+                        // NEW: O(1) lookup instead of conversion
+                        let im = im_cache[scan as usize];
                         
                         td.rt_values_min.push(rt_min);
                         td.mobility_values.push(im);
@@ -257,64 +275,19 @@ fn read_timstof_data(d_folder: &Path) -> Result<TimsTOFRawData, Box<dyn Error>> 
     
     for split in &splits {
         if !split.ms1.mz_values.is_empty() {
-            global_ms1.rt_values_min.extend(&split.ms1.rt_values_min);
-            global_ms1.mobility_values.extend(&split.ms1.mobility_values);
-            global_ms1.mz_values.extend(&split.ms1.mz_values);
-            global_ms1.intensity_values.extend(&split.ms1.intensity_values);
-            global_ms1.frame_indices.extend(&split.ms1.frame_indices);
-            global_ms1.scan_indices.extend(&split.ms1.scan_indices);
+            global_ms1.rt_values_min.extend_from_slice(&split.ms1.rt_values_min);
+            global_ms1.mobility_values.extend_from_slice(&split.ms1.mobility_values);
+            global_ms1.mz_values.extend_from_slice(&split.ms1.mz_values);
+            global_ms1.intensity_values.extend_from_slice(&split.ms1.intensity_values);
+            global_ms1.frame_indices.extend_from_slice(&split.ms1.frame_indices);
+            global_ms1.scan_indices.extend_from_slice(&split.ms1.scan_indices);
         }
     }
     println!("  ✓ MS1 merge: {:.2} ms ({} peaks)", 
              ms1_merge_start.elapsed().as_secs_f32() * 1000.0, 
              global_ms1.mz_values.len());
     
-    // // Step 5: Merge MS2 data - HEAVILY OPTIMIZED
-    // let ms2_merge_start = Instant::now();
-    // println!("  Merging MS2 data...");
-    
-    // // OPTIMIZATION #2: Pre-allocate HashMap with expected size
-    // // Typically 32-50 windows in DIA
-    // let mut ms2_hash: HashMap<(u32,u32), TimsTOFData> = HashMap::with_capacity(64);
-    
-    // // OPTIMIZATION: Pre-calculate total MS2 size per window to avoid reallocation
-    // let mut window_sizes: HashMap<(u32, u32), usize> = HashMap::with_capacity(64);
-    // for split in &splits {
-    //     for (key, td) in &split.ms2 {
-    //         *window_sizes.entry(*key).or_insert(0) += td.mz_values.len();
-    //     }
-    // }
-    
-    // // Pre-allocate each window with exact capacity
-    // for (key, size) in window_sizes {
-    //     ms2_hash.insert(key, TimsTOFData::with_capacity(size));
-    // }
-    
-    // // Now merge without reallocation
-    // for mut split in splits {
-    //     for (key, mut td) in split.ms2 {
-    //         if let Some(entry) = ms2_hash.get_mut(&key) {
-    //             entry.merge_from(&mut td);
-    //         }
-    //     }
-    // }
-    
-    // println!("  ✓ MS2 merge: {:.2} ms ({} windows)", 
-    //          ms2_merge_start.elapsed().as_secs_f32() * 1000.0, 
-    //          ms2_hash.len());
-    
-    // // Step 6: Convert to final format
-    // let ms2_convert_start = Instant::now();
-    // let mut ms2_vec = Vec::with_capacity(ms2_hash.len());
-
-    // // OPTIMIZATION: Move data instead of cloning
-    // for ((q_low, q_high), td) in ms2_hash {
-    //     let low = q_low as f32 / 10_000.0;
-    //     let high = q_high as f32 / 10_000.0;
-    //     ms2_vec.push(((low, high), td));
-    // }
-
-    // Replace your MS2 merge with parallel version:
+    // Step 5: Parallel MS2 merge
     let ms2_merge_start = Instant::now();
     println!("  Merging MS2 data...");
 
@@ -342,7 +315,7 @@ fn read_timstof_data(d_folder: &Path) -> Result<TimsTOFRawData, Box<dyn Error>> 
             ms2_hash.len());
 
     // Step 6: Convert to final format
-    let ms2_convert_start = Instant::now();  // ADD THIS LINE - was missing!
+    let ms2_convert_start = Instant::now();
 
     // Convert to final format
     let mut ms2_vec: Vec<_> = ms2_hash.into_iter()
@@ -379,16 +352,15 @@ fn read_timstof_data(d_folder: &Path) -> Result<TimsTOFRawData, Box<dyn Error>> 
 
 fn main() -> Result<(), Box<dyn Error>> {
     // Configure thread pool for optimal performance
-    // Comment this out to use all available cores, or adjust as needed
     rayon::ThreadPoolBuilder::new()
-        .num_threads(32)  // Set to optimal thread count based on your testing
+        .num_threads(32)  // Optimal for your HPC system
+        .stack_size(2 * 1024 * 1024)  // 2MB stack size
         .build_global()
         .unwrap();
     
     // Hard-coded path to TimsTOF data
-    // let data_path = "/path/to/your/data.d";  // CHANGE THIS TO YOUR PATH
-    let data_path = "/Users/augustsirius/Desktop/DIA_peak_group_extraction/输入数据文件/raw_data/CAD20220207yuel_TPHP_DIA_pool1_Slot2-54_1_4382.d";
-    // let data_path = "/wangshuaiyao/dia-bert-timstof/test_data/CAD20220207yuel_TPHP_DIA_pool1_Slot2-54_1_4382.d";
+    // let data_path = "/Users/augustsirius/Desktop/DIA_peak_group_extraction/输入数据文件/raw_data/CAD20220207yuel_TPHP_DIA_pool1_Slot2-54_1_4382.d";
+    let data_path = "/wangshuaiyao/dia-bert-timstof/test_data/CAD20220207yuel_TPHP_DIA_pool1_Slot2-54_1_4382.d";
     
     let d_path = Path::new(data_path);
     if !d_path.exists() {
