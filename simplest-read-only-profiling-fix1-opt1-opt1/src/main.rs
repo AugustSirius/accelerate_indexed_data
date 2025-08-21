@@ -1,7 +1,7 @@
 use std::{error::Error, path::Path, time::Instant};
 use std::collections::HashMap;
 use rayon::prelude::*;
-use timsrust::{converters::{ConvertableDomain, Scan2ImConverter}, readers::{FrameReader, MetadataReader}, MSLevel};
+use timsrust::{converters::ConvertableDomain, readers::{FrameReader, MetadataReader}, MSLevel};
 use std::sync::Arc;
 
 // ============================================================================
@@ -116,15 +116,6 @@ fn build_scan_lookup(scan_offsets: &[usize]) -> Vec<u32> {
     lookup
 }
 
-// NEW OPTIMIZATION: Build IM cache for O(1) mobility lookups
-// Fixed to use concrete type instead of trait object
-#[inline]
-fn build_im_cache(im_cv: &Arc<Scan2ImConverter>, max_scans: usize) -> Vec<f32> {
-    (0..max_scans)
-        .map(|scan| im_cv.convert(scan as f64) as f32)
-        .collect()
-}
-
 // ============================================================================
 // Core Data Reading Function - HEAVILY OPTIMIZED
 // ============================================================================
@@ -166,9 +157,6 @@ fn read_timstof_data(d_folder: &Path) -> Result<TimsTOFRawData, Box<dyn Error>> 
                 // OPTIMIZATION: Build scan lookup table once per frame
                 let scan_lookup = build_scan_lookup(&frame.scan_offsets);
                 
-                // NEW OPTIMIZATION: Pre-compute all mobility values for this frame
-                let im_cache = build_im_cache(&im_cv, frame.scan_offsets.len());
-                
                 // OPTIMIZATION: Use iterators and pre-allocated capacity
                 for (p_idx, (&tof, &intensity)) in frame.tof_indices.iter()
                     .zip(frame.intensities.iter())
@@ -183,8 +171,7 @@ fn read_timstof_data(d_folder: &Path) -> Result<TimsTOFRawData, Box<dyn Error>> 
                         (frame.scan_offsets.len() - 1) as u32
                     };
                     
-                    // NEW: O(1) lookup instead of conversion
-                    let im = im_cache[scan as usize];
+                    let im = im_cv.convert(scan as f64) as f32;
                     
                     ms1.rt_values_min.push(rt_min);
                     ms1.mobility_values.push(im);
@@ -200,9 +187,6 @@ fn read_timstof_data(d_folder: &Path) -> Result<TimsTOFRawData, Box<dyn Error>> 
                 
                 // OPTIMIZATION: Build scan lookup table once for MS2 frame
                 let scan_lookup = build_scan_lookup(&frame.scan_offsets);
-                
-                // NEW OPTIMIZATION: Pre-compute all mobility values for this frame
-                let im_cache = build_im_cache(&im_cv, frame.scan_offsets.len());
                 
                 for win in 0..qs.isolation_mz.len() {
                     if win >= qs.isolation_width.len() { break; }
@@ -238,9 +222,7 @@ fn read_timstof_data(d_folder: &Path) -> Result<TimsTOFRawData, Box<dyn Error>> 
                         }
                         
                         let mz = mz_cv.convert(tof as f64) as f32;
-                        
-                        // NEW: O(1) lookup instead of conversion
-                        let im = im_cache[scan as usize];
+                        let im = im_cv.convert(scan as f64) as f32;
                         
                         td.rt_values_min.push(rt_min);
                         td.mobility_values.push(im);
@@ -287,7 +269,7 @@ fn read_timstof_data(d_folder: &Path) -> Result<TimsTOFRawData, Box<dyn Error>> 
              ms1_merge_start.elapsed().as_secs_f32() * 1000.0, 
              global_ms1.mz_values.len());
     
-    // Step 5: Parallel MS2 merge
+    // Step 5: Parallel MS2 merge - OPTIMIZED
     let ms2_merge_start = Instant::now();
     println!("  Merging MS2 data...");
 
@@ -354,7 +336,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Configure thread pool for optimal performance
     rayon::ThreadPoolBuilder::new()
         .num_threads(32)  // Optimal for your HPC system
-        .stack_size(2 * 1024 * 1024)  // 2MB stack size
+        // REMOVED stack_size setting - let it use default
         .build_global()
         .unwrap();
     
